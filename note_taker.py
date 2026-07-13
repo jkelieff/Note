@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
 """
 Meeting Note Taker
-Sits silently in the background, captures audio from your meeting,
-transcribes it live with Whisper, then generates a summary + action items via Claude.
+Sits silently in the background, captures audio (and optionally screen video)
+from your meeting, transcribes it live with Whisper, then generates a summary
++ action items via Claude when you press Ctrl+C.
 
 Usage:
-    python note_taker.py                    # record from default mic
-    python note_taker.py --loopback         # capture system audio (what plays through speakers)
-    python note_taker.py --both             # mic + system audio mixed (most complete)
-    python note_taker.py --list-devices     # show available audio devices
-    python note_taker.py --model medium     # use a larger Whisper model for better accuracy
+    python note_taker.py                          # mic only
+    python note_taker.py --loopback               # system audio (others' voices)
+    python note_taker.py --both                   # mic + system audio
+    python note_taker.py --record-screen          # mic + screen video
+    python note_taker.py --both --record-screen   # everything
+    python note_taker.py --list-devices           # show audio device indices
+    python note_taker.py --model small            # better accuracy
 """
 
 import os
 import sys
 import time
 import queue
+import shutil
+import platform
+import subprocess
 import threading
 import tempfile
 import argparse
@@ -41,20 +47,17 @@ SILENCE_THRESHOLD = 0.005  # RMS below this = silence, skip transcription
 DTYPE = np.float32
 
 
-# ── Audio helpers ─────────────────────────────────────────────────────────────
+# ── Audio helpers ──────────────────────────────────────────────────────────────
 
 def find_loopback_device():
     """Return the best loopback device index for the current platform."""
     devices = sd.query_devices()
-    hostapis = sd.query_hostapis()
 
-    # Windows: prefer WASAPI loopback entries
     for i, dev in enumerate(devices):
         name = dev["name"].lower()
         if "loopback" in name or "stereo mix" in name or "what u hear" in name:
             return i
 
-    # macOS: BlackHole, Soundflower, Loopback
     for i, dev in enumerate(devices):
         name = dev["name"].lower()
         if any(x in name for x in ("blackhole", "soundflower", "loopback")):
@@ -67,17 +70,104 @@ def rms(data: np.ndarray) -> float:
     return float(np.sqrt(np.mean(data ** 2)))
 
 
-# ── Core recorder ─────────────────────────────────────────────────────────────
+# ── Screen recorder ────────────────────────────────────────────────────────────
+
+class ScreenRecorder:
+    """Wraps ffmpeg to record the screen to an MP4 in the background."""
+
+    def __init__(self, output_path: Path, fps: int = 10):
+        self.output_path = output_path
+        self.fps = fps
+        self._process: subprocess.Popen | None = None
+
+    def _build_command(self) -> list[str]:
+        system = platform.system()
+        if system == "Windows":
+            return [
+                "ffmpeg", "-y",
+                "-f", "gdigrab",
+                "-framerate", str(self.fps),
+                "-i", "desktop",
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "28",
+                "-pix_fmt", "yuv420p",
+                str(self.output_path),
+            ]
+        elif system == "Darwin":
+            return [
+                "ffmpeg", "-y",
+                "-f", "avfoundation",
+                "-framerate", str(self.fps),
+                "-i", "1:none",          # screen index 1, no audio (audio handled separately)
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "28",
+                "-pix_fmt", "yuv420p",
+                str(self.output_path),
+            ]
+        else:  # Linux
+            display = os.environ.get("DISPLAY", ":0")
+            return [
+                "ffmpeg", "-y",
+                "-f", "x11grab",
+                "-framerate", str(self.fps),
+                "-i", display,
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "28",
+                "-pix_fmt", "yuv420p",
+                str(self.output_path),
+            ]
+
+    def start(self):
+        if not shutil.which("ffmpeg"):
+            console.print(
+                "[bold red]ffmpeg not found.[/bold red] "
+                "Install it to use --record-screen:\n"
+                "  Windows:  winget install ffmpeg   (or https://ffmpeg.org/download.html)\n"
+                "  macOS:    brew install ffmpeg\n"
+                "  Linux:    sudo apt install ffmpeg"
+            )
+            sys.exit(1)
+
+        cmd = self._build_command()
+        self._process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        console.print(f"[dim]Screen recording started → {self.output_path.name}[/dim]")
+
+    def stop(self):
+        if self._process and self._process.poll() is None:
+            try:
+                self._process.stdin.write(b"q")
+                self._process.stdin.flush()
+            except (BrokenPipeError, OSError):
+                pass
+            try:
+                self._process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+        self._process = None
+
+
+# ── Core recorder ──────────────────────────────────────────────────────────────
 
 class MeetingRecorder:
     def __init__(self, device=None, loopback_device=None, mix_both=False,
-                 model_size="base", output_dir=None):
+                 model_size="base", output_dir=None,
+                 record_screen=False, screen_fps=10):
         self.device = device
         self.loopback_device = loopback_device
         self.mix_both = mix_both
         self.model_size = model_size
         self.output_dir = Path(output_dir) if output_dir else Path.cwd() / "meetings"
         self.output_dir.mkdir(exist_ok=True)
+        self.record_screen = record_screen
+        self.screen_fps = screen_fps
 
         self.mic_queue: queue.Queue = queue.Queue()
         self.loopback_queue: queue.Queue = queue.Queue()
@@ -95,15 +185,15 @@ class MeetingRecorder:
 
     def _mic_callback(self, indata, frames, time_info, status):
         if status:
-            console.print(f"[yellow]mic: {status}[/yellow]", stderr=True)
+            console.print(f"[yellow]mic: {status}[/yellow]", err=True)
         self.mic_queue.put(indata.copy())
 
     def _loopback_callback(self, indata, frames, time_info, status):
         if status:
-            console.print(f"[yellow]loopback: {status}[/yellow]", stderr=True)
+            console.print(f"[yellow]loopback: {status}[/yellow]", err=True)
         self.loopback_queue.put(indata.copy())
 
-    # ── Mixing thread (only used when --both) ─────────────────────────────────
+    # ── Mixing thread ──────────────────────────────────────────────────────────
 
     def _mixer_thread(self):
         while self.is_recording:
@@ -119,13 +209,12 @@ class MeetingRecorder:
             if mic is None and lb is None:
                 continue
 
-            # Pad to same length if needed
             if mic is not None and lb is not None:
                 n = max(len(mic), len(lb))
                 m = np.zeros((n, 1), dtype=DTYPE)
                 l = np.zeros((n, 1), dtype=DTYPE)
                 m[: len(mic)] = mic
-                l[: len(lb)] = lb[:, :1]  # loopback may be stereo
+                l[: len(lb)] = lb[:, :1]
                 mixed = np.clip((m + l) * 0.5, -1, 1)
             elif mic is not None:
                 mixed = mic
@@ -134,7 +223,6 @@ class MeetingRecorder:
 
             self.mixed_queue.put(mixed)
 
-        # Drain remaining
         while not self.mic_queue.empty() or not self.loopback_queue.empty():
             try:
                 mic = self.mic_queue.get_nowait()
@@ -171,14 +259,13 @@ class MeetingRecorder:
                 buffer = []
                 buffer_samples = 0
 
-        # Flush remainder
         if buffer:
             self._flush_buffer(buffer)
 
     def _flush_buffer(self, chunks: list[np.ndarray]):
         audio = np.concatenate(chunks)
         if rms(audio) < SILENCE_THRESHOLD:
-            return  # skip silent chunks
+            return
 
         text = self._transcribe(audio)
         if not text:
@@ -203,15 +290,24 @@ class MeetingRecorder:
 
     # ── Main recording loop ────────────────────────────────────────────────────
 
-    def record(self):
+    def record(self) -> Path | None:
+        """Start recording. Returns the video path if screen recording was enabled."""
         self.is_recording = True
         self.start_time = time.time()
+
+        # Start screen recorder if requested
+        screen_recorder = None
+        video_path = None
+        if self.record_screen:
+            ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
+            video_path = self.output_dir / f"{ts}_recording.mp4"
+            screen_recorder = ScreenRecorder(video_path, fps=self.screen_fps)
+            screen_recorder.start()
 
         streams = []
         threads = []
 
         if self.mix_both:
-            # Start both streams + a mixer thread
             source_queue = self.mixed_queue
             mixer = threading.Thread(target=self._mixer_thread, daemon=True)
             threads.append(mixer)
@@ -230,7 +326,7 @@ class MeetingRecorder:
                 ))
 
         elif self.loopback_device is not None:
-            source_queue = self.mic_queue   # reused as single queue
+            source_queue = self.mic_queue
             streams.append(sd.InputStream(
                 device=self.loopback_device,
                 channels=2, samplerate=SAMPLE_RATE, dtype=DTYPE,
@@ -261,6 +357,9 @@ class MeetingRecorder:
             console.print(Rule("[yellow]Stopping...[/yellow]"))
         finally:
             self.is_recording = False
+            if screen_recorder:
+                screen_recorder.stop()
+                console.print(f"[dim]Screen recording saved.[/dim]")
             for s in streams:
                 try:
                     s.stop()
@@ -269,6 +368,8 @@ class MeetingRecorder:
                     pass
             for t in threads:
                 t.join(timeout=90)
+
+        return video_path
 
     # ── Transcript ─────────────────────────────────────────────────────────────
 
@@ -353,9 +454,7 @@ def list_devices():
             f"  [{i:>2}] [cyan]{d['name']}[/cyan] "
             f"({'|'.join(direction)}){loopback}"
         )
-    console.print(
-        "\n[dim]Pass the index with --device or --loopback-device.[/dim]"
-    )
+    console.print("\n[dim]Pass the index with --device or --loopback-device.[/dim]")
 
 
 def main():
@@ -373,11 +472,15 @@ def main():
                         help="Explicit loopback device index (auto-detected if omitted)")
     parser.add_argument("--both", action="store_true",
                         help="Mix microphone + system audio (most complete transcript)")
+    parser.add_argument("--record-screen", action="store_true",
+                        help="Also record your screen to an MP4 (requires ffmpeg)")
+    parser.add_argument("--screen-fps", type=int, default=10,
+                        help="Screen recording frame rate (default: 10 — lower = smaller file)")
     parser.add_argument("--model", default="base",
                         choices=["tiny", "base", "small", "medium", "large-v3"],
                         help="Whisper model size (default: base; medium/large = more accurate)")
     parser.add_argument("--output-dir", default=None,
-                        help="Where to save transcripts and summaries (default: ./meetings)")
+                        help="Where to save files (default: ./meetings)")
     parser.add_argument("--api-key", default=None,
                         help="Anthropic API key (or set ANTHROPIC_API_KEY env var)")
     args = parser.parse_args()
@@ -397,13 +500,10 @@ def main():
                 "[bold red]No loopback device found.[/bold red]\n"
                 "On Windows: enable 'Stereo Mix' in Sound settings, or install VB-Cable.\n"
                 "On macOS: install BlackHole (brew install blackhole-2ch).\n"
-                "On Linux: use 'pavucontrol' to route output to a monitor source.\n"
-                "Then re-run with [cyan]--loopback-device INDEX[/cyan] using the index "
-                "from [cyan]--list-devices[/cyan]."
+                "Then re-run with [cyan]--loopback-device INDEX[/cyan] from [cyan]--list-devices[/cyan]."
             )
             sys.exit(1)
-        console.print(f"[dim]Loopback device: [{loopback_device}] "
-                      f"{sd.query_devices(loopback_device)['name']}[/dim]")
+        console.print(f"[dim]Loopback: [{loopback_device}] {sd.query_devices(loopback_device)['name']}[/dim]")
 
     recorder = MeetingRecorder(
         device=args.device,
@@ -411,21 +511,23 @@ def main():
         mix_both=args.both,
         model_size=args.model,
         output_dir=args.output_dir,
+        record_screen=args.record_screen,
+        screen_fps=args.screen_fps,
     )
 
-    mode = "mic + system audio" if args.both else ("system audio" if args.loopback else "microphone")
+    audio_mode = "mic + system audio" if args.both else ("system audio" if args.loopback else "microphone")
+    extras = " + screen video" if args.record_screen else ""
     console.print(Panel(
         f"[bold]Meeting Note Taker[/bold]\n"
-        f"Mode: [cyan]{mode}[/cyan]  |  "
+        f"Capturing: [cyan]{audio_mode}{extras}[/cyan]  |  "
         f"Model: [cyan]{args.model}[/cyan]  |  "
         f"Output: [cyan]{recorder.output_dir}[/cyan]\n\n"
         f"[dim]Live transcript appears below. Press Ctrl+C when the meeting ends.[/dim]",
         expand=False,
     ))
 
-    recorder.record()
+    video_path = recorder.record()
 
-    # Post-processing
     console.print()
     summary = recorder.generate_summary(api_key=args.api_key)
     t_path, s_path = recorder.save(summary)
@@ -435,6 +537,8 @@ def main():
     console.print()
     console.print(f"[green]Transcript:[/green] {t_path}")
     console.print(f"[green]Summary:[/green]    {s_path}")
+    if video_path:
+        console.print(f"[green]Video:[/green]      {video_path}")
 
 
 if __name__ == "__main__":
