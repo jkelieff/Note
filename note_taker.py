@@ -309,7 +309,8 @@ class MeetingRecorder:
 ### Action Items
 | # | Action | Owner | Due |
 |---|--------|-------|-----|
-List every concrete task, who owns it (write "TBD" if unclear), and the deadline if mentioned.
+List every concrete task, who owns it, and the deadline if mentioned.
+Default the Owner to "Me" unless the transcript clearly names someone else.
 
 ### Open Questions
 - Any unresolved issues or questions raised that need a follow-up.
