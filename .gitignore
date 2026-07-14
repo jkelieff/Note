@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Meeting outputs (recordings, transcripts, summaries stay local)
+meetings/
+*.mp4
+*.wav
+*.mp3
+*.m4a
+
+# Environment
+.env
