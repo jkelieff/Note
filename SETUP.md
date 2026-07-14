@@ -1,11 +1,39 @@
 # Meeting Note Taker — Setup Guide
 
-Two ways to use this:
+Three ways to use this:
 
-1. **`note_taker.py`** — sits silently in the background during a live meeting, transcribes as it goes, and produces a summary + actions when you press Ctrl+C.
-2. **`process_recording.py`** — takes a recording you already have (a screen grab, a Teams recording, a phone recording — any video or audio file) and produces the same transcript + summary + actions from it.
+1. **`desktop_app.py`** — a small always-on-top control panel that sits on your desktop. Pick the screen your meeting is on, hit record, and it **hides itself from the meeting's screen share** while it captures that screen to video and transcribes the audio. On stop it writes a summary + action items. This is the app most people want.
+2. **`note_taker.py`** — the same engine as a headless CLI: sits silently in the background during a live meeting, transcribes as it goes, and produces a summary + actions when you press Ctrl+C.
+3. **`process_recording.py`** — takes a recording you already have (a screen grab, a Teams recording, a phone recording — any video or audio file) and produces the same transcript + summary + actions from it.
 
-If IT restrictions or setup hassle get in the way of the live version, the **process-recording** route is the easy path: record the meeting however you can, then run one command on the file afterward.
+If IT restrictions or setup hassle get in the way of the live versions, the **process-recording** route is the easy path: record the meeting however you can, then run one command on the file afterward.
+
+---
+
+## The desktop app (recommended)
+
+```bash
+pip install -r requirements.txt
+python desktop_app.py
+```
+
+A compact panel appears and floats on top of everything. In it you:
+
+1. **Choose the screen the meeting is on** — the panel captures exactly that monitor.
+2. **Choose the audio** — microphone, system audio (everyone else's voices), or both.
+3. Optionally leave **Record video** on to save an MP4 of the meeting screen.
+4. Press **Start recording**. A live transcript scrolls in the panel.
+5. Press **Stop & summarise** when the meeting ends. Transcript, summary, and action items are written to your output folder.
+
+### How "not visible in the meeting" works
+
+The panel asks the OS to exclude its own window from screen capture:
+
+- **Windows 10 (2004+) / 11** — `SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)`. Teams, Zoom, Meet, OBS, and even PrintScreen won't see the panel, even though you can. The panel shows **"✓ Hidden from screen share & recordings"** when this succeeds.
+- **macOS** — `NSWindow.sharingType = NSWindowSharingNone` (needs `pip install pyobjc`).
+- **Linux/X11** — no reliable per-window capture exclusion exists, so the panel warns you and you should move it onto a monitor you're *not* sharing.
+
+Because the window is excluded from *all* capture, it also stays out of the MP4 the app records — so your recording shows only the meeting, never the control panel.
 
 ---
 

@@ -1,6 +1,18 @@
+# Core transcription + summary (used by every entry point)
 sounddevice>=0.4.6
 faster-whisper>=1.0.0
 anthropic>=0.30.0
-rich>=13.0.0
 numpy>=1.24.0
 soundfile>=0.12.0
+
+# Desktop app (desktop_app.py)
+PySide6>=6.5.0
+
+# CLI pretty output (note_taker.py / process_recording.py)
+rich>=13.0.0
+
+# Optional monitor enumeration fallback when Qt isn't importing monitors
+screeninfo>=0.8.1
+
+# macOS only — lets the app hide its window from screen capture
+pyobjc-framework-Cocoa>=9.0; sys_platform == "darwin"
