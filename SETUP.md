@@ -1,6 +1,11 @@
 # Meeting Note Taker — Setup Guide
 
-Sits silently in the background. Captures audio from your Microsoft Teams meeting, transcribes it live, and produces a summary + action items the moment you press Ctrl+C.
+Two ways to use this:
+
+1. **`note_taker.py`** — sits silently in the background during a live meeting, transcribes as it goes, and produces a summary + actions when you press Ctrl+C.
+2. **`process_recording.py`** — takes a recording you already have (a screen grab, a Teams recording, a phone recording — any video or audio file) and produces the same transcript + summary + actions from it.
+
+If IT restrictions or setup hassle get in the way of the live version, the **process-recording** route is the easy path: record the meeting however you can, then run one command on the file afterward.
 
 ---
 
@@ -155,6 +160,28 @@ The team discussed Q3 roadmap priorities and agreed to delay the mobile launch..
 ### Open Questions
 - Budget approval for contractor still pending from Finance
 ```
+
+---
+
+## Processing a recording you already have
+
+If you recorded the meeting some other way (screen grab, Teams recording, phone), you don't need the live tool at all. Just point this script at the file:
+
+```powershell
+python process_recording.py "C:\path\to\your_recording.mp4"
+```
+
+It works with video **or** audio files — mp4, mkv, mov, avi, webm, mp3, wav, m4a, and more. For video files it automatically pulls out the audio (the video itself isn't needed for the summary).
+
+```powershell
+# Better accuracy
+python process_recording.py meeting.mp4 --model small
+
+# Choose where output lands
+python process_recording.py meeting.mp4 --output-dir "C:\Users\You\MeetingNotes"
+```
+
+You still need `ffmpeg` installed (for reading the file) and `ANTHROPIC_API_KEY` set (for the summary). Output is the same two files: a timestamped transcript and a markdown summary with the action items table.
 
 ---
 
