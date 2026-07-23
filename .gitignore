@@ -5,6 +5,11 @@ __pycache__/
 .venv/
 venv/
 
+# PyInstaller build output
+build/
+dist/
+*.manifest
+
 # Meeting outputs (recordings, transcripts, summaries stay local)
 meetings/
 *.mp4

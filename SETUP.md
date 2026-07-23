@@ -25,6 +25,29 @@ A compact panel appears and floats on top of everything. In it you:
 4. Press **Start recording**. A live transcript scrolls in the panel.
 5. Press **Stop & summarise** when the meeting ends. Transcript, summary, and action items are written to your output folder.
 
+### Make it a clickable app (no terminal)
+
+You have two levels, depending on whether you want Python involved at all.
+
+**Level 1 — click to launch (Python installed):**
+
+1. Double-click **`Install (first time).bat`** once — it installs the dependencies.
+2. From then on, double-click **`Meeting Note Taker.bat`** to start. It uses `pythonw`, so no console window hangs around.
+   (macOS: double-click `launch_macos.command` instead.)
+
+**Level 2 — a true standalone `.exe` (no Python needed):**
+
+Double-click **`Build standalone app.bat`**. It bundles everything into a single file:
+
+```
+dist\MeetingNoteTaker.exe
+```
+
+Double-click that `.exe` to run, or pin it to your taskbar / Start menu. You can copy it to any Windows PC — Python doesn't have to be installed there.
+(macOS: `build_macos.command` produces `dist/MeetingNoteTaker.app`, which you can drag to Applications.)
+
+> The standalone build must be produced **on the OS you'll run it on** — build the `.exe` on Windows, the `.app` on macOS. ffmpeg is still needed for video: either install it (`winget install ffmpeg`) or drop `ffmpeg.exe` next to `desktop_app.spec` before building to bundle it in.
+
 ### How "not visible in the meeting" works
 
 The panel asks the OS to exclude its own window from screen capture:
