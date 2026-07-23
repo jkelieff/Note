@@ -1,0 +1,80 @@
+name: Build desktop app
+
+# Builds the standalone Meeting Note Taker app on real Windows and macOS
+# runners and uploads the results as downloadable artifacts. Runs on every
+# push to the feature branch, on manual dispatch, and attaches binaries to a
+# release when you push a version tag (e.g. v1.0.0).
+
+on:
+  push:
+    branches:
+      - claude/desktop-note-recorder-app-np9e57
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: MeetingNoteTaker-windows
+          - os: macos-latest
+            artifact: MeetingNoteTaker-macos
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      # Bundle a static ffmpeg next to the spec so the built app can record
+      # video without a separate install. Best-effort — the build still
+      # succeeds (audio/transcript/summary work) if the download fails.
+      - name: Bundle ffmpeg (Windows)
+        if: matrix.os == 'windows-latest'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp
+          $exe = Get-ChildItem -Path ffmpeg_tmp -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          Copy-Item $exe.FullName -Destination ffmpeg.exe
+
+      - name: Bundle ffmpeg (macOS)
+        if: matrix.os == 'macos-latest'
+        continue-on-error: true
+        run: |
+          brew install ffmpeg || true
+          cp "$(which ffmpeg)" ./ffmpeg || true
+
+      - name: Build with PyInstaller
+        run: python -m PyInstaller --noconfirm desktop_app.spec
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Attach to release (on version tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
