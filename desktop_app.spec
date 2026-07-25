@@ -15,6 +15,7 @@ Build it with:
 """
 
 import os
+import sys
 from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
@@ -51,12 +52,17 @@ for candidate in ("ffmpeg.exe", "ffmpeg"):
         binaries.append((candidate, "."))
         break
 
-# Optional app icon — provide app.ico (Windows) or app.icns (macOS) to use it.
-icon_file = None
-for candidate in ("app.ico", "app.icns"):
-    if os.path.exists(candidate):
-        icon_file = candidate
-        break
+# App icon — Windows wants .ico, macOS wants .icns. Pick the right one per OS
+# (and keep whichever exists as a fallback).
+if sys.platform == "win32":
+    _icon_order = ("app.ico",)
+elif sys.platform == "darwin":
+    _icon_order = ("app.icns", "app.ico")
+else:
+    _icon_order = ("app.ico", "app.icns")
+
+icon_file = next((c for c in _icon_order if os.path.exists(c)), None)
+bundle_icon = "app.icns" if os.path.exists("app.icns") else icon_file
 
 a = Analysis(
     ["desktop_app.py"],
@@ -103,7 +109,7 @@ exe = EXE(
 app = BUNDLE(
     exe,
     name="MeetingNoteTaker.app",
-    icon=icon_file,
+    icon=bundle_icon,
     bundle_identifier="com.notetaker.meeting",
     info_plist={
         "NSMicrophoneUsageDescription":

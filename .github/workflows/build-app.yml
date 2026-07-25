@@ -2,8 +2,8 @@ name: Build desktop app
 
 # Builds the standalone Meeting Note Taker app on real Windows and macOS
 # runners and uploads the results as downloadable artifacts. Runs on every
-# push to the feature branch, on manual dispatch, and attaches binaries to a
-# release when you push a version tag (e.g. v1.0.0).
+# push to the feature branch, on manual dispatch, and publishes a GitHub
+# Release with the binaries when you push a version tag (e.g. v1.0.0).
 
 on:
   push:
@@ -73,8 +73,45 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-      - name: Attach to release (on version tag)
-        if: startsWith(github.ref, 'refs/tags/v')
+  # Publish a permanent GitHub Release with both apps when a v* tag is pushed.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download built apps
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Zip each app for release
+        run: |
+          cd artifacts
+          for d in */; do
+            name="${d%/}"
+            (cd "$d" && zip -r "../${name}.zip" .)
+          done
+          ls -la
+
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: artifacts/*.zip
+          name: Meeting Note Taker ${{ github.ref_name }}
+          generate_release_notes: false
+          body: |
+            **Meeting Note Taker — desktop app**
+
+            A floating recorder that hides itself from the meeting's screen share,
+            records the screen you pick, and produces a transcript, summary, and
+            action items.
+
+            ### Download
+            - **Windows** — `MeetingNoteTaker-windows.zip` → unzip → double-click `MeetingNoteTaker.exe`
+            - **macOS** — `MeetingNoteTaker-macos.zip` → unzip → open `MeetingNoteTaker.app`
+
+            ffmpeg is bundled in, so video recording works out of the box. Set
+            `ANTHROPIC_API_KEY` for the Claude-generated summary.
+
+            > First launch: Windows SmartScreen → *More info → Run anyway*;
+            > macOS → right-click the app → *Open* (the app is unsigned).
