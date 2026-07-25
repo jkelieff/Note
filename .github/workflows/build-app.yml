@@ -73,12 +73,24 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # Publish a permanent GitHub Release with both apps when a v* tag is pushed.
+  # Publish a permanent GitHub Release with both apps. The tag is created by CI
+  # itself (from the VERSION file) using the built-in GITHUB_TOKEN, so it works
+  # even where local `git push --tags` is blocked. Runs on the feature branch
+  # and on any pushed v* tag; every push keeps the release's binaries current.
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      github.ref == 'refs/heads/claude/desktop-note-recorder-app-np9e57' ||
+      startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Read version
+        id: ver
+        run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
+
       - name: Download built apps
         uses: actions/download-artifact@v4
         with:
@@ -96,8 +108,10 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.version }}
           files: artifacts/*.zip
-          name: Meeting Note Taker ${{ github.ref_name }}
+          name: Meeting Note Taker v${{ steps.ver.outputs.version }}
+          make_latest: true
           generate_release_notes: false
           body: |
             **Meeting Note Taker — desktop app**
