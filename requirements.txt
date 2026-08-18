@@ -1,6 +1,13 @@
-sounddevice>=0.4.6
+# Core (always needed)
 faster-whisper>=1.0.0
-anthropic>=0.30.0
-rich>=13.0.0
-numpy>=1.24.0
+flask>=3.0.0
+
+# Live recording via the desktop CLI (note_taker.py) — optional if you only
+# use the web dashboard's browser recording / file upload
+sounddevice>=0.4.6
 soundfile>=0.12.0
+numpy>=1.24.0
+rich>=13.0.0
+
+# Only needed if you choose the paid Claude summary backend
+anthropic>=0.30.0

@@ -2,24 +2,56 @@
 """
 Shared engine for the Meeting Note Taker.
 
-Both the command-line tools and the desktop GUI use these functions so the
-transcription/summary logic lives in one place. Designed to work when frozen
-into a standalone executable (it looks for a bundled ffmpeg next to itself).
+The desktop app, the CLI tools, and the web dashboard all use these functions
+so the transcription/summary logic lives in one place.
+
+Transcription is always local (Whisper) and free. The summary step is
+pluggable via `backend`:
+  - "ollama"  -> a local model (free, private, no key)      [default]
+  - "gemini"  -> Google Gemini free tier (needs a free key)
+  - "claude"  -> Anthropic Claude (paid, needs a key)
 """
 
 import os
 import sys
+import json
 import shutil
 import subprocess
 import tempfile
+import urllib.request
+import urllib.error
 from pathlib import Path
 from typing import Callable, Optional
 
 from faster_whisper import WhisperModel
-import anthropic
 
 # A progress callback takes a single status string. Defaults to no-op.
 Progress = Callable[[str], None]
+
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+
+SUMMARY_PROMPT = """You are an expert meeting assistant. Analyse the transcript below and produce a structured report.
+
+## Output format (strict markdown):
+
+### Summary
+2-4 sentences covering the main topics and outcomes.
+
+### Key Decisions
+- Bullet list of decisions made (skip if none).
+
+### Action Items
+| # | Action | Owner | Due |
+|---|--------|-------|-----|
+List every concrete task, who owns it, and the deadline if mentioned.
+Default the Owner to "Me" unless the transcript clearly names someone else.
+
+### Open Questions
+- Any unresolved issues or questions raised that need a follow-up.
+
+---
+**Transcript:**
+{transcript}"""
 
 
 def _base_dir() -> Path:
@@ -82,61 +114,109 @@ def transcribe_file(
     return "\n".join(lines)
 
 
-def summarise(
-    transcript: str,
-    api_key: Optional[str] = None,
-    progress: Progress = lambda s: None,
-) -> str:
-    """Turn a transcript into a summary + action items via Claude."""
-    if not transcript.strip():
-        return "*(No speech detected in the recording.)*"
+# ── Summary backends ─────────────────────────────────────────────────────────
 
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
-        return (
-            "*(No API key provided, so no summary was generated. "
-            "The transcript has still been saved.)*"
+def ollama_available(host: str = OLLAMA_HOST) -> bool:
+    """True if a local Ollama server is reachable."""
+    try:
+        with urllib.request.urlopen(f"{host}/api/tags", timeout=3) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def _summarise_ollama(transcript: str, model: str, host: str,
+                      progress: Progress) -> str:
+    progress(f"Summarising locally with Ollama ({model})...")
+    payload = json.dumps({
+        "model": model,
+        "prompt": SUMMARY_PROMPT.format(transcript=transcript),
+        "stream": False,
+        "options": {"temperature": 0.2},
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{host}/api/generate", data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=600) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return data.get("response", "").strip() or "*(Empty response from local model.)*"
+    except urllib.error.URLError as e:
+        raise RuntimeError(
+            f"Could not reach Ollama at {host}. Is it running? "
+            f"Install from https://ollama.com and run 'ollama pull {model}'.\n"
+            f"Details: {e}"
         )
 
-    progress("Sending transcript to Claude for summary and actions...")
-    client = anthropic.Anthropic(api_key=key)
 
-    prompt = f"""You are an expert meeting assistant. Analyse the transcript below and produce a structured report.
+def _summarise_gemini(transcript: str, api_key: str, model: str,
+                      progress: Progress) -> str:
+    progress("Summarising with Google Gemini (free tier)...")
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{model}:generateContent?key={api_key}")
+    payload = json.dumps({
+        "contents": [{"parts": [{"text": SUMMARY_PROMPT.format(transcript=transcript)}]}],
+        "generationConfig": {"temperature": 0.2},
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=payload,
+                                headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except (urllib.error.URLError, KeyError, IndexError) as e:
+        raise RuntimeError(f"Gemini request failed: {e}")
 
-## Output format (strict markdown):
 
-### Summary
-2–4 sentences covering the main topics and outcomes.
-
-### Key Decisions
-- Bullet list of decisions made (skip if none).
-
-### Action Items
-| # | Action | Owner | Due |
-|---|--------|-------|-----|
-List every concrete task, who owns it, and the deadline if mentioned.
-Default the Owner to "Me" unless the transcript clearly names someone else.
-
-### Open Questions
-- Any unresolved issues or questions raised that need a follow-up.
-
----
-**Transcript:**
-{transcript}"""
-
+def _summarise_claude(transcript: str, api_key: str, progress: Progress) -> str:
+    import anthropic
+    progress("Summarising with Claude...")
+    client = anthropic.Anthropic(api_key=api_key)
     response = client.messages.create(
         model="claude-opus-4-8",
         max_tokens=2048,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "user",
+                   "content": SUMMARY_PROMPT.format(transcript=transcript)}],
     )
     return response.content[0].text
+
+
+def summarise(
+    transcript: str,
+    backend: str = "ollama",
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    host: str = OLLAMA_HOST,
+    progress: Progress = lambda s: None,
+) -> str:
+    """Turn a transcript into a summary + action items using the chosen backend."""
+    if not transcript.strip():
+        return "*(No speech detected in the recording.)*"
+
+    if backend == "ollama":
+        return _summarise_ollama(transcript, model or "llama3.1", host, progress)
+    if backend == "gemini":
+        key = api_key or os.environ.get("GEMINI_API_KEY")
+        if not key:
+            return "*(No Gemini API key provided. Transcript saved.)*"
+        return _summarise_gemini(transcript, key, model or "gemini-1.5-flash", progress)
+    if backend == "claude":
+        key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        if not key:
+            return "*(No Claude API key provided. Transcript saved.)*"
+        return _summarise_claude(transcript, key, progress)
+    raise ValueError(f"Unknown summary backend: {backend}")
 
 
 def process_recording(
     input_path: Path,
     output_dir: Path,
     model_size: str = "base",
+    backend: str = "ollama",
     api_key: Optional[str] = None,
+    summary_model: Optional[str] = None,
+    ollama_host: str = OLLAMA_HOST,
     progress: Progress = lambda s: None,
 ) -> tuple[str, Path, Path]:
     """
@@ -156,7 +236,10 @@ def process_recording(
         except OSError:
             pass
 
-    summary = summarise(transcript, api_key, progress)
+    summary = summarise(
+        transcript, backend=backend, api_key=api_key,
+        model=summary_model, host=ollama_host, progress=progress,
+    )
 
     stem = input_path.stem
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M")
