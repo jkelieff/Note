@@ -141,10 +141,14 @@ def api_config():
 
 @app.route("/api/health")
 def api_health():
+    has_bundled = notecore.bundled_model_available()
+    # Only probe for Ollama when there's no bundled model — the probe blocks
+    # briefly when nothing is listening, and it's irrelevant if AI is bundled.
+    ollama = False if has_bundled else notecore.ollama_available()
     return jsonify({
         "ffmpeg": notecore.find_ffmpeg() is not None,
-        "ollama": notecore.ollama_available(),
-        "bundled_ai": notecore.bundled_model_available(),
+        "ollama": ollama,
+        "bundled_ai": has_bundled,
     })
 
 

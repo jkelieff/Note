@@ -184,9 +184,9 @@ def _summarise_bundled(transcript: str, progress: Progress) -> str:
 
 
 def ollama_available(host: str = OLLAMA_HOST) -> bool:
-    """True if a local Ollama server is reachable."""
+    """True if a local Ollama server is reachable (fast check)."""
     try:
-        with urllib.request.urlopen(f"{host}/api/tags", timeout=3) as r:
+        with urllib.request.urlopen(f"{host}/api/tags", timeout=0.6) as r:
             return r.status == 200
     except Exception:
         return False
