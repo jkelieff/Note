@@ -64,10 +64,28 @@ def _base_dir() -> Path:
 def find_ffmpeg() -> Optional[str]:
     """Locate ffmpeg: bundled alongside the app first, then on PATH."""
     exe = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
-    local = _base_dir() / exe
-    if local.exists():
-        return str(local)
+    for cand in (_base_dir() / exe, _base_dir() / "ffmpeg" / exe):
+        if cand.exists():
+            return str(cand)
     return shutil.which("ffmpeg")
+
+
+def find_bundled_model() -> Optional[Path]:
+    """Locate a bundled GGUF summary model shipped next to the app."""
+    for folder in (_base_dir(), _base_dir() / "models"):
+        if folder.is_dir():
+            hits = sorted(folder.glob("*.gguf"))
+            if hits:
+                return hits[0]
+    return None
+
+
+def find_whisper_model_dir() -> Optional[str]:
+    """Locate a bundled Whisper (CTranslate2) model dir for fully-offline use."""
+    for folder in (_base_dir() / "whisper-model", _base_dir() / "models" / "whisper"):
+        if folder.is_dir() and (folder / "model.bin").exists():
+            return str(folder)
+    return None
 
 
 def extract_audio(input_path: Path, progress: Progress = lambda s: None) -> Path:
@@ -98,8 +116,13 @@ def transcribe_file(
     wav_path: Path, model_size: str = "base", progress: Progress = lambda s: None
 ) -> str:
     """Transcribe a WAV file to a timestamped transcript string."""
-    progress(f"Loading transcription model ({model_size})...")
-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
+    bundled = find_whisper_model_dir()
+    if bundled:
+        progress("Loading bundled transcription model...")
+        model = WhisperModel(bundled, device="cpu", compute_type="int8")
+    else:
+        progress(f"Loading transcription model ({model_size})...")
+        model = WhisperModel(model_size, device="cpu", compute_type="int8")
 
     progress("Transcribing — this can take a while on long recordings...")
     segments, _ = model.transcribe(str(wav_path), beam_size=5, language="en")
@@ -115,6 +138,50 @@ def transcribe_file(
 
 
 # ── Summary backends ─────────────────────────────────────────────────────────
+
+# Cache the loaded in-process model so we don't reload it each meeting.
+_LLAMA = None
+
+
+def bundled_model_available() -> bool:
+    return find_bundled_model() is not None
+
+
+def _summarise_bundled(transcript: str, progress: Progress) -> str:
+    """Summarise with an in-process GGUF model via llama-cpp-python (no server)."""
+    global _LLAMA
+    model_path = find_bundled_model()
+    if not model_path:
+        return "*(No bundled AI model found next to the app. Transcript saved.)*"
+
+    try:
+        from llama_cpp import Llama
+    except ImportError:
+        raise RuntimeError(
+            "llama-cpp-python is not installed. This backend is meant for the "
+            "packaged app; for a plain Python install use the 'ollama' backend."
+        )
+
+    if _LLAMA is None:
+        progress("Loading the built-in AI model (first time takes a moment)...")
+        _LLAMA = Llama(
+            model_path=str(model_path),
+            n_ctx=8192,
+            n_threads=max(1, (os.cpu_count() or 4) - 1),
+            verbose=False,
+        )
+
+    progress("Writing summary with the built-in AI model...")
+    result = _LLAMA.create_chat_completion(
+        messages=[
+            {"role": "system", "content": "You are an expert meeting assistant."},
+            {"role": "user", "content": SUMMARY_PROMPT.format(transcript=transcript)},
+        ],
+        temperature=0.2,
+        max_tokens=2048,
+    )
+    return result["choices"][0]["message"]["content"].strip()
+
 
 def ollama_available(host: str = OLLAMA_HOST) -> bool:
     """True if a local Ollama server is reachable."""
@@ -194,6 +261,8 @@ def summarise(
     if not transcript.strip():
         return "*(No speech detected in the recording.)*"
 
+    if backend == "local":
+        return _summarise_bundled(transcript, progress)
     if backend == "ollama":
         return _summarise_ollama(transcript, model or "llama3.1", host, progress)
     if backend == "gemini":

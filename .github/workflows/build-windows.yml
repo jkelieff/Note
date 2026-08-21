@@ -1,0 +1,121 @@
+name: Build Windows portable app
+
+# Builds a fully self-contained Windows app (Python + Whisper + a bundled
+# offline AI model + ffmpeg) and publishes it as a downloadable release asset.
+# Runs on GitHub's free Windows machines because a Windows .exe can only be
+# built on Windows.
+
+on:
+  workflow_dispatch:       # lets us trigger it manually
+  push:
+    branches:
+      - claude/clever-mendel-35vvv2
+    paths:
+      - 'server.py'
+      - 'notecore.py'
+      - 'static/**'
+      - '.github/workflows/build-windows.yml'
+
+permissions:
+  contents: write          # needed to publish the release asset
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    env:
+      # Small, capable instruct model that runs comfortably on 8GB RAM and keeps
+      # the download under the release-asset size limit.
+      MODEL_URL: https://huggingface.co/bartowski/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf
+      FFMPEG_URL: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip
+      APP_NAME: MeetingNoteTaker
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install flask faster-whisper huggingface_hub pyinstaller
+          pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+
+      - name: Download ffmpeg
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_extracted
+          $exe = Get-ChildItem -Recurse ffmpeg_extracted -Filter ffmpeg.exe | Select-Object -First 1
+          Copy-Item $exe.FullName -Destination ffmpeg.exe
+          Write-Host "ffmpeg.exe ready: $((Get-Item ffmpeg.exe).Length) bytes"
+
+      - name: Download bundled AI model
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path payload\models | Out-Null
+          curl.exe -L $env:MODEL_URL -o payload\models\model.gguf
+          $size = (Get-Item payload\models\model.gguf).Length
+          Write-Host "model.gguf size: $size bytes"
+          if ($size -lt 100000000) { throw "Model download too small - URL likely wrong." }
+
+      - name: Download Whisper transcription model
+        shell: pwsh
+        run: |
+          python -c "from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-base', local_dir='payload/whisper-model')"
+          if (-not (Test-Path payload\whisper-model\model.bin)) { throw "Whisper model.bin missing." }
+          Write-Host "Whisper model ready."
+
+      - name: Build with PyInstaller
+        shell: pwsh
+        run: |
+          pyinstaller --name $env:APP_NAME --console --noconfirm --clean `
+            --add-data "static;static" `
+            --collect-all llama_cpp `
+            --collect-all faster_whisper `
+            --collect-all ctranslate2 `
+            server.py
+
+      - name: Assemble portable folder
+        shell: pwsh
+        run: |
+          $dest = "dist\$env:APP_NAME"
+          Copy-Item ffmpeg.exe -Destination $dest\ffmpeg.exe
+          Copy-Item payload\models -Destination $dest\models -Recurse
+          Copy-Item payload\whisper-model -Destination $dest\whisper-model -Recurse
+          # A friendly readme inside the folder
+          @"
+          Meeting Note Taker - portable Windows app
+
+          HOW TO USE
+          1. Double-click $env:APP_NAME.exe
+          2. A small black window opens and your browser opens the dashboard.
+          3. Use 'Upload a recording' or 'Record a live meeting'.
+          4. To stop, close the black window.
+
+          Everything runs on this PC. No internet or install needed.
+          The first summary of each session takes a few extra seconds while the
+          AI model loads into memory.
+          "@ | Out-File -Encoding utf8 $dest\READ-ME-FIRST.txt
+
+      - name: Zip the app
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist\$env:APP_NAME\*" -DestinationPath "$env:APP_NAME-Windows.zip"
+          Write-Host "Zip size: $((Get-Item "$env:APP_NAME-Windows.zip").Length) bytes"
+
+      - name: Publish as release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-app
+          name: Meeting Note Taker (Windows)
+          body: |
+            Portable Windows app — download the zip below, extract it to a USB
+            stick or any folder, and double-click MeetingNoteTaker.exe.
+            No installation, AI included, works offline.
+          files: ${{ env.APP_NAME }}-Windows.zip

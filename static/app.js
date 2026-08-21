@@ -20,10 +20,11 @@ async function checkHealth() {
     const ff = h.ffmpeg
       ? '<span class="pill ok">ffmpeg ✓</span>'
       : '<span class="pill no">ffmpeg missing</span>';
-    const ol = h.ollama
-      ? '<span class="pill ok">local AI ✓</span>'
-      : '<span class="pill no">Ollama not running</span>';
-    $("health").innerHTML = ff + " " + ol;
+    let ai;
+    if (h.bundled_ai) ai = '<span class="pill ok">built-in AI ✓</span>';
+    else if (h.ollama) ai = '<span class="pill ok">local AI ✓</span>';
+    else ai = '<span class="pill no">AI not set up</span>';
+    $("health").innerHTML = ff + " " + ai;
   } catch { /* ignore */ }
 }
 checkHealth();
@@ -40,6 +41,7 @@ async function loadSettings() {
 function updateKeyHint() {
   const b = $("setBackend").value;
   $("keyNeeded").textContent =
+    b === "local" ? "(not needed — built into the app)" :
     b === "ollama" ? "(not needed for local model)" :
     b === "gemini" ? "(free Gemini key)" : "(paid Claude key)";
 }

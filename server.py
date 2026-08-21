@@ -18,6 +18,7 @@ Then open:  http://localhost:5000  (opens automatically)
 """
 
 import os
+import sys
 import json
 import uuid
 import threading
@@ -29,7 +30,12 @@ from flask import Flask, request, jsonify, send_from_directory
 
 import notecore
 
-APP_DIR = Path(__file__).resolve().parent
+# When frozen by PyInstaller, bundled data (the static/ folder) lives under
+# sys._MEIPASS; as a plain script it sits next to this file.
+if getattr(sys, "frozen", False):
+    APP_DIR = Path(sys._MEIPASS)  # type: ignore[attr-defined]
+else:
+    APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = Path.home() / ".meeting_note_taker.json"
 DEFAULT_OUTPUT = Path.home() / "Documents" / "MeetingNotes"
 UPLOAD_DIR = Path(notecore.tempfile.gettempdir()) / "note_uploads"
@@ -45,9 +51,11 @@ JOBS_LOCK = threading.Lock()
 # ── Config persistence ───────────────────────────────────────────────────────
 
 def load_config() -> dict:
+    # When a model is bundled next to the app, prefer the fully-offline backend.
+    default_backend = "local" if notecore.bundled_model_available() else "ollama"
     defaults = {
         "model": "base",
-        "backend": "ollama",
+        "backend": default_backend,
         "summary_model": "llama3.1",
         "api_key": "",
         "output_dir": str(DEFAULT_OUTPUT),
@@ -136,6 +144,7 @@ def api_health():
     return jsonify({
         "ffmpeg": notecore.find_ffmpeg() is not None,
         "ollama": notecore.ollama_available(),
+        "bundled_ai": notecore.bundled_model_available(),
     })
 
 
