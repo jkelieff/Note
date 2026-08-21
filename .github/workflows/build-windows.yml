@@ -103,6 +103,29 @@ jobs:
           AI model loads into memory.
           "@ | Out-File -Encoding utf8 $dest\READ-ME-FIRST.txt
 
+      - name: Smoke-test the built app (does it actually launch?)
+        shell: pwsh
+        run: |
+          $env:NOTE_NO_BROWSER = "1"
+          $exe = "dist\$env:APP_NAME\$env:APP_NAME.exe"
+          $proc = Start-Process -FilePath $exe -PassThru `
+            -RedirectStandardOutput app_out.txt -RedirectStandardError app_err.txt
+          $ok = $false
+          foreach ($i in 1..30) {
+            Start-Sleep -Seconds 2
+            try {
+              $h = Invoke-RestMethod -Uri "http://127.0.0.1:5000/api/health" -TimeoutSec 3
+              Write-Host "Health: ffmpeg=$($h.ffmpeg) bundled_ai=$($h.bundled_ai)"
+              if ($h.ffmpeg -and $h.bundled_ai) { $ok = $true }
+              break
+            } catch { Write-Host "waiting for app to boot... ($i)" }
+          }
+          if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          Write-Host "----- app stdout -----"; if (Test-Path app_out.txt) { Get-Content app_out.txt }
+          Write-Host "----- app stderr -----"; if (Test-Path app_err.txt) { Get-Content app_err.txt }
+          if (-not $ok) { throw "App did not boot / health check failed." }
+          Write-Host "Smoke test passed: the app launches and serves the dashboard."
+
       - name: Zip the app
         shell: pwsh
         run: |
