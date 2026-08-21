@@ -98,6 +98,12 @@ jobs:
           3. Use 'Upload a recording' or 'Record a live meeting'.
           4. To stop, close the black window.
 
+          WHERE YOUR NOTES ARE SAVED
+          Transcripts and summaries are saved into the 'MeetingNotes' folder
+          right here next to the app (i.e. on your USB stick) - nothing is
+          written to the computer you plug into. You can also read/copy the
+          summary straight from the dashboard without opening any file.
+
           Everything runs on this PC. No internet or install needed.
           The first summary of each session takes a few extra seconds while the
           AI model loads into memory.

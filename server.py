@@ -33,13 +33,37 @@ import notecore
 # When frozen by PyInstaller, bundled data (the static/ folder) lives under
 # sys._MEIPASS; as a plain script it sits next to this file.
 if getattr(sys, "frozen", False):
+    FROZEN = True
     APP_DIR = Path(sys._MEIPASS)  # type: ignore[attr-defined]
+    PORTABLE_DIR = Path(sys.executable).parent  # the app's own folder (e.g. the USB)
 else:
+    FROZEN = False
     APP_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = Path.home() / ".meeting_note_taker.json"
-DEFAULT_OUTPUT = Path.home() / "Documents" / "MeetingNotes"
-UPLOAD_DIR = Path(notecore.tempfile.gettempdir()) / "note_uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
+    PORTABLE_DIR = APP_DIR
+
+# Portable mode (the packaged app): keep EVERYTHING next to the app on the USB —
+# settings, saved notes, and transient upload files — so nothing is written to
+# the host laptop. As a plain script, use the user's home folder as before.
+if FROZEN:
+    CONFIG_PATH = PORTABLE_DIR / "settings.json"
+    DEFAULT_OUTPUT = PORTABLE_DIR / "MeetingNotes"
+    UPLOAD_DIR = PORTABLE_DIR / "_temp_uploads"
+else:
+    CONFIG_PATH = Path.home() / ".meeting_note_taker.json"
+    DEFAULT_OUTPUT = Path.home() / "Documents" / "MeetingNotes"
+    UPLOAD_DIR = Path(notecore.tempfile.gettempdir()) / "note_uploads"
+
+try:
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    # If the app's folder is read-only, fall back to the system temp dir.
+    UPLOAD_DIR = Path(notecore.tempfile.gettempdir()) / "note_uploads"
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# In portable mode, also route the transient audio-extraction file here (onto
+# the USB) instead of the laptop's system temp folder.
+if FROZEN:
+    notecore.tempfile.tempdir = str(UPLOAD_DIR)
 
 app = Flask(__name__, static_folder=str(APP_DIR / "static"))
 
